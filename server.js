@@ -224,6 +224,17 @@ app.use((err, req, res, next) => {
   console.error('Error interno:', err);
   res.status(500).json({ error: 'Error interno del servidor' });
 });
-const port = Number(process.env.PORT || 3000);
-poolPromise.then(() => app.listen(port, () => console.log(`API lista: http://localhost:${port}`)))
-  .catch(err => { console.error('No fue posible conectar a SQL Server:', err.message); process.exit(1); });
+
+
+if (require.main === module) {
+  const port = Number(process.env.PORT || 3000);
+
+  poolPromise.then(() => {
+    app.listen(port, () => console.log(`API lista: http://localhost:${port}`));
+  }).catch(err => {
+    console.error('No fue posible conectar a SQL Server:', err.message);
+    process.exit(1);
+  });
+}
+
+module.exports = { app, poolPromise };

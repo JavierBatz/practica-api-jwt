@@ -4,7 +4,8 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node server.js",
+    "test": "node --test test/repuestos.test.js"
   },
   "keywords": [],
   "author": "",
@@ -18,5 +19,8 @@
     "helmet": "^8.3.0",
     "jsonwebtoken": "^9.0.3",
     "mssql": "^12.7.14"
+  },
+  "devDependencies": {
+    "supertest": "^7.3.2"
   }
 }
