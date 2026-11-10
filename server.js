@@ -106,11 +106,55 @@ async function autenticar(req, res, next) {
     return next(err);
   }
 }
+
 function soloAdmin(req, res, next) {
   if (req.usuario.rol !== 'admin') return res.status(403).json({ error: 'No tienes permisos de administrador' });
   next();
 }
+
+function permisosSupervisorAdmin(req, res, next) {
+  if (req.usuario.rol !== 'supervisor' && req.usuario.rol !== 'admin') return res.status(403).json({ error: 'No tienes permisos de supervisor' });
+  next();
+}
+
+
+
 app.get('/api/auth/me', autenticar, (req, res) => res.json({ usuario: req.usuario }));
+
+app.get('/api/repuestos', autenticar, async (req, res, next) => {
+  const nombre = req.query.nombre;
+
+  if (nombre !== undefined && !noVacio(nombre, 120)) {
+    return res.status(400).json({ error: 'Nombre inválido' });
+  }
+
+  try {
+    const pool = await poolPromise;
+    const result = await pool.request()
+      .input('nombre', sql.NVarChar(120), nombre !== undefined ? `%${nombre.trim()}%` : null)
+      .query(`SELECT RepuestoId, Codigo, Nombre, Precio, Stock FROM dbo.Repuestos WHERE Activo = 1  AND (@nombre IS NULL OR Nombre LIKE @nombre)ORDER BY RepuestoId`);
+
+    res.json({ datos: result.recordset });
+  } catch (err) { next(err); }
+});
+
+app.get('/api/repuestos/stock-bajo', autenticar, async (req, res, next) => {
+  const limite = req.query.limite;
+
+  if (limite !== undefined && !idValido(limite)) {
+    return res.status(400).json({ error: 'Limite invalido' });
+  }
+
+  try {
+    const pool = await poolPromise;
+    const result = await pool.request()
+      .input('limite', sql.Int, limite !== undefined ? Number(limite) : 5)
+      .query(`SELECT RepuestoId, Codigo, Nombre, Precio, Stock FROM dbo.Repuestos
+              WHERE Activo = 1 AND Stock <= @limite ORDER BY RepuestoId`);
+
+    res.json({ datos: result.recordset });
+  } catch (err) { next(err); }
+});
 
 app.get('/api/repuestos', autenticar, async (_req, res, next) => {
   try {
@@ -129,7 +173,8 @@ app.get('/api/repuestos/:id', autenticar, async (req, res, next) => {
     res.json({ dato: result.recordset[0] });
   } catch (err) { next(err); }
 });
-app.post('/api/repuestos', autenticar, soloAdmin, async (req, res, next) => {
+
+app.post('/api/repuestos', autenticar,permisosSupervisorAdmin, async (req, res, next) => {
   if (!valoresRepuestoValidos(req.body)) return res.status(400).json({ error: 'Datos de repuesto inválidos' });
   try {
     const { codigo, nombre, precio, stock } = req.body;
@@ -146,7 +191,7 @@ app.post('/api/repuestos', autenticar, soloAdmin, async (req, res, next) => {
     next(err);
   }
 });
-app.patch('/api/repuestos/:id', autenticar, soloAdmin, async (req, res, next) => {
+app.patch('/api/repuestos/:id', autenticar, permisosSupervisorAdmin, async (req, res, next) => {
   if (!idValido(req.params.id)) return res.status(400).json({ error: 'ID inválido' });
   const { precio, stock } = req.body || {};
   if (!Number.isFinite(precio) || typeof precio !== 'number' || precio < 0 || precio > 9999999999.99 ||
