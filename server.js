@@ -191,6 +191,7 @@ app.post('/api/repuestos', autenticar,permisosSupervisorAdmin, async (req, res, 
     next(err);
   }
 });
+
 app.patch('/api/repuestos/:id', autenticar, permisosSupervisorAdmin, async (req, res, next) => {
   if (!idValido(req.params.id)) return res.status(400).json({ error: 'ID inválido' });
   const { precio, stock } = req.body || {};
@@ -200,25 +201,81 @@ app.patch('/api/repuestos/:id', autenticar, permisosSupervisorAdmin, async (req,
   }
   try {
     const pool = await poolPromise;
-    const result = await pool.request().input('id', sql.Int, Number(req.params.id))
-      .input('precio', sql.Decimal(12, 2), precio).input('stock', sql.Int, stock)
-      .query(`UPDATE dbo.Repuestos SET Precio = @precio, Stock = @stock
-              OUTPUT INSERTED.RepuestoId, INSERTED.Codigo, INSERTED.Nombre, INSERTED.Precio, INSERTED.Stock
-              WHERE RepuestoId = @id AND Activo = 1`);
-    if (!result.recordset[0]) return res.status(404).json({ error: 'Repuesto no encontrado' });
+
+    const result = await pool.request()
+      .input('id', sql.Int, Number(req.params.id))
+      .input('precio', sql.Decimal(12, 2), precio)
+      .input('stock', sql.Int, stock)
+      .input('usuario', sql.Int, req.usuario.id)
+      .query(`
+        BEGIN TRY
+          BEGIN TRANSACTION;
+          UPDATE dbo.Repuestos
+          SET Precio = @precio, Stock = @stock
+          OUTPUT INSERTED.RepuestoId, INSERTED.Codigo,
+          INSERTED.Nombre, INSERTED.Precio, INSERTED.Stock
+          WHERE RepuestoId = @id AND Activo = 1;
+          IF @@ROWCOUNT <> 1
+            THROW 50001, 'Repuesto no encontrado', 1;
+
+          INSERT INTO dbo.AuditoriaRepuestos (UsuarioId, Accion, RepuestoId) VALUES(@usuario, 'Actualizar', @id);
+          COMMIT TRANSACTION;
+        END TRY
+        BEGIN CATCH
+          IF @@TRANCOUNT > 0
+            ROLLBACK TRANSACTION;
+          THROW;
+        END CATCH;
+      `);
+
     res.json({ dato: result.recordset[0] });
-  } catch (err) { next(err); }
+
+  } catch (err) {
+    if (err.number === 50001) {
+      return res.status(404).json({ error: 'Repuesto no encontrado' });
+    }
+    next(err);
+  }
 });
+
+
+
+
 app.delete('/api/repuestos/:id', autenticar, soloAdmin, async (req, res, next) => {
   if (!idValido(req.params.id)) return res.status(400).json({ error: 'ID inválido' });
   try {
     const pool = await poolPromise;
-    const result = await pool.request().input('id', sql.Int, Number(req.params.id))
-      .query('UPDATE dbo.Repuestos SET Activo = 0 WHERE RepuestoId = @id AND Activo = 1');
-    if (!result.rowsAffected[0]) return res.status(404).json({ error: 'Repuesto no encontrado' });
+    await pool.request()
+      .input('id', sql.Int, Number(req.params.id))
+      .input('usuario', sql.Int, req.usuario.id)
+      .query(`
+        BEGIN TRY
+          BEGIN TRANSACTION;
+          UPDATE dbo.Repuestos
+          SET Activo = 0
+          WHERE RepuestoId = @id AND Activo = 1;
+          IF @@ROWCOUNT <> 1
+            THROW 50001, 'Repuesto no encontrado', 1;
+          INSERT INTO dbo.AuditoriaRepuestos (UsuarioId, Accion, RepuestoId)  VALUES  (@usuario, 'Eliminar', @id);
+          COMMIT TRANSACTION;
+        END TRY
+        BEGIN CATCH
+          IF @@TRANCOUNT > 0
+            ROLLBACK TRANSACTION;
+          THROW;
+        END CATCH;
+      `);
     res.status(204).send();
-  } catch (err) { next(err); }
+  } catch (err) {
+    if (err.number === 50001) {
+      return res.status(404).json({ error: 'Repuesto no encontrado' });
+    }
+    next(err);
+  }
 });
+
+
+
 app.use((req, res) => res.status(404).json({ error: 'Ruta inexistente' }));
 app.use((err, req, res, next) => {
   console.error('Error interno:', err);
