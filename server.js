@@ -1,12 +1,13 @@
 require('dotenv').config();
 const express = require('express');
 const sql = require('mssql');
+const { v4 : uuidv4}= require("uuid");
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const helmet = require('helmet');
 const { rateLimit } = require('express-rate-limit');
 
-const required = ['DB_SERVER', 'DB_NAME', 'DB_USER', 'DB_PASSWORD', 'JWT_SECRET'];
+const required = ['DB_SERVER', 'DB_NAME', 'DB_USER', 'DB_PASSWORD', 'JWT_SECRET', 'REFRESH_EXPIRES'];
 for (const key of required) {
   if (!process.env[key]) throw new Error(`Falta la variable ${key} en .env`);
 }
@@ -74,15 +75,66 @@ app.post('/api/auth/login', authLimiter, async (req, res, next) => {
     if (!user || !user.Activo || !(await bcrypt.compare(password, user.PasswordHash))) {
       return res.status(401).json({ error: 'Credenciales incorrectas' });
     }
-    const token = jwt.sign({ rol: user.Rol }, process.env.JWT_SECRET, {
+    const accessToken = jwt.sign({ rol: user.Rol }, process.env.JWT_SECRET, {
       algorithm: 'HS256', subject: String(user.UsuarioId), issuer, audience, expiresIn: '15m'
     });
+    const refreshToken = generateRefreshToken(user.UsuarioId) 
     await pool.request().input('id', sql.Int, user.UsuarioId)
       .query('UPDATE dbo.Usuarios SET UltimoLogin = SYSUTCDATETIME() WHERE UsuarioId = @id');
-    return res.json({ accessToken: token, tokenType: 'Bearer', expiresInSeconds: 900,
+    return res.json({ accessToken: accessToken,  refreshToken: refreshToken ,
       usuario: { id: user.UsuarioId, nombre: user.Nombre, email: user.Email, rol: user.Rol } });
   } catch (err) { next(err); }
 });
+
+const refreshTokens = {};
+
+function generateRefreshToken(userId){
+    const token = uuidv4();
+    refreshTokens[token] = userId;
+
+    Object.keys(refreshTokens).forEach(t => {
+        if(t !== token && refreshTokens[t] === userId)
+            refreshTokens[t] = undefined;
+    })
+
+    setTimeout(() => delete refreshTokens[token], parseInt(process.env.REFRESH_EXPIRES));
+    return token;
+}
+
+app.post("/refresh", async (req, res, next) => {
+  try{
+    let token = req.headers["authorization"];
+    if (!token) return res.status(401).json({ message: "Token requerido" });
+
+    token = token.replace("Bearer ", "");
+    const userId = refreshTokens[token];
+    if (!userId) return res.status(401).json({ message: "Token invalido" });
+
+    const pool = await poolPromise;
+    const result = await pool.request()
+      .input('id', sql.Int, userId)
+      .query(`SELECT UsuarioId, Nombre, Email, Rol, Activo
+              FROM dbo.Usuarios
+              WHERE UsuarioId = @id`);
+    const user = result.recordset[0];
+
+    if (!user || !user.Activo) {
+      return res.status(401).json({ message: "Usuario invalido o inactivo" });
+    }
+
+    const accessToken = jwt.sign({ rol: user.Rol }, process.env.JWT_SECRET, {
+      algorithm: 'HS256', subject: String(user.UsuarioId), issuer, audience, expiresIn: '15m'
+    });
+
+    delete refreshTokens[token];
+
+   const newRefreshToken = generateRefreshToken(user.UsuarioId);
+
+    return res.json({ accessToken, refreshToken: newRefreshToken});
+  }catch (error){
+    next(error);
+  }
+})
 
 async function autenticar(req, res, next) {
   const authorization = req.headers.authorization;
@@ -156,13 +208,6 @@ app.get('/api/repuestos/stock-bajo', autenticar, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-app.get('/api/repuestos', autenticar, async (_req, res, next) => {
-  try {
-    const pool = await poolPromise;
-    const result = await pool.request().query('SELECT RepuestoId, Codigo, Nombre, Precio, Stock FROM dbo.Repuestos WHERE Activo = 1 ORDER BY RepuestoId');
-    res.json({ datos: result.recordset });
-  } catch (err) { next(err); }
-});
 app.get('/api/repuestos/:id', autenticar, async (req, res, next) => {
   if (!idValido(req.params.id)) return res.status(400).json({ error: 'ID inválido' });
   try {
